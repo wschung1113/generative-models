@@ -123,7 +123,8 @@ criterion = torch.nn.CrossEntropyLoss()
 optimizer = optim.Adam(net_lstm.parameters(), learning_rate)
 nb_epochs = 10
 loss_lstm = []
-dataloader = DataLoader(dataset, batch_size = 512, shuffle = True, collate_fn = collate_fn) # 자동배치 ON 
+dataloader = DataLoader(dataset, batch_size = 1, shuffle = True, collate_fn = collate_fn) # 자동배치 ON
+batch = next(iter(dataloader)) 
 learning_rate = 0.0001 # 0.01로 했을 때 convergence_loss = 0.52, 0.001은 0.046, 0.0005
 
 start_time = time.time()

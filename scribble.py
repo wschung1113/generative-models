@@ -42,6 +42,8 @@ X = torch.nn.utils.rnn.pack_padded_sequence(batch[0].to(device), batch[2].to(dev
 
 lengths = batch[2]
 
+max_len = batch[3]
+
 mod_1 = torch.nn.RNN(29, 29, num_layers = 1, batch_first=True).to(device)
 
 out = mod_1(X)
@@ -51,5 +53,32 @@ out = torch.nn.utils.rnn.pad_packed_sequence(out[0], batch_first = True)
 mod_2 = torch.nn.Linear(29, 29, bias=True).to(device)
 
 out = mod_2(out[0])
+x = torch.zeros((vocab_size, 1))
+x[char_to_index['<']] = 1
+x = x.reshape((-1, 1, vocab_size)).to(device)
+out = lstm_model(x, torch.as_tensor([len(x)], dtype = torch.int64, device = 'cpu'))
+out = lstm_model(out, torch.as_tensor([len(out)], dtype = torch.int64, device = 'cpu'))
 
-net(X, lengths)
+
+
+
+
+
+
+outputs = rnn_model(x, torch.as_tensor([len(x)], dtype = torch.int64, device = 'cpu'))
+result = outputs.cpu().data.numpy().argmax()
+
+
+
+X, Y, lengths = batch[0].to(device), batch[1].to(device), batch[2].to(device)
+# X = torch.nn.utils.rnn.pack_padded_sequence(X, lengths, batch_first = True, enforce_sorted = False)
+outputs = lstm_model(X, lengths)
+
+result = outputs.cpu().data.numpy().argmax(axis=2)
+result_str = ''.join([index_to_char[c] for c in np.squeeze(result)])
+print(result_str)
+
+true = ''.join([index_to_char[c] for c in Y.squeeze().tolist()])
+print(true)
+
+outputs = lstm_model(x, torch.as_tensor([2], dtype = torch.int64, device = 'cpu'))
