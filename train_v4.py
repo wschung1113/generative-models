@@ -1,3 +1,4 @@
+from textwrap import dedent
 import pandas as pd
 import numpy as np
 import random
@@ -17,21 +18,38 @@ from torch.utils.data import TensorDataset # 텐서데이터셋
 from torch.utils.data import DataLoader # 데이터로더
 from torch.nn.utils.rnn import pad_sequence # 자동패딩해주는 함수
 
-from pytorchtools import EarlyStopping
+# from pytorchtools import EarlyStopping
 
 dtype = torch.float
-# device = torch.device('cpu')
 device = torch.device('cuda:0')
 
-char_to_index = torch.load('char_to_index.pt')
-index_to_char = torch.load('index_to_char.pt')
-max_len = torch.load('max_len.pt')
-lines = torch.load('lines.pt')
-lines_encoded = torch.load('lines_encoded.pt')
-find_max_len = torch.load('find_max_len.pt')
+char_to_index = torch.load('data_specs.pt')[0]
+index_to_char = torch.load('data_specs.pt')[1]
+max_len = torch.load('data_specs.pt')[2]
+lines = torch.load('data_specs.pt')[3]
+lines_encoded = torch.load('data_specs.pt')[4]
+
+class CustomDataset(Dataset): 
+    def __init__(self):
+        # self.x_data = train_X
+        # self.y_data = train_y
+        self.data = lines_encoded
+
+    # 총 데이터의 개수를 리턴
+    def __len__(self): 
+        return len(self.data)
+
+    # 인덱스를 입력받아 그에 맵핑되는 입출력 데이터를 파이토치의 Tensor 형태로 리턴
+    def __getitem__(self, idx): 
+        # x = torch.cuda.FloatTensor(self.x_data[idx])
+        # y = torch.cuda.FloatTensor(self.y_data[idx])
+        # x = self.x_data[idx]
+        # y = self.y_data[idx]
+        l = torch.LongTensor(self.data[idx])
+        # l = self.data[idx]
+        return l, len(l) - 1
 
 dataset = torch.load('dataset.pt')
-# tensor_dataset = torch.load('tensor_dataset.pt')
 
 # dataloader
 def collate_fn(data):
@@ -56,89 +74,65 @@ def collate_fn(data):
 
 # hyperparameters
 vocab_size = len(char_to_index)
-input_size = len(char_to_index) # 각 시점 입력의 크기 = 원-핫 벡터의 길이
-hidden_size = len(char_to_index) # hidden_size 역시 원-핫 벡터의 길이
-output_size = len(char_to_index) # 출력 사이즈 역시 vocab_size
-
-# RNN
-class Net(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, layers): # 현재 hidden_size는 dic_size와 같음.
-        super(Net, self).__init__()
-        self.rnn = torch.nn.RNN(input_dim, hidden_dim, num_layers=layers, batch_first=True)
-        self.fc = torch.nn.Linear(hidden_dim, hidden_dim, bias=True)
-
-    def forward(self, x, lengths):
-        x = torch.nn.utils.rnn.pack_padded_sequence(x, lengths, batch_first = True, enforce_sorted = False)
-        x, _status = self.rnn(x)
-        x = torch.nn.utils.rnn.pad_packed_sequence(x, batch_first = True, total_length = torch.max(lengths))
-        x = self.fc(x[0])
-        return x
-net_rnn = Net(input_dim = len(char_to_index), hidden_dim = hidden_size, layers = 2).to(device)
-
-criterion = torch.nn.CrossEntropyLoss()
-optimizer = optim.Adam(net_rnn.parameters(), learning_rate)
-nb_epochs = 0
-loss_rnn = []
-dataloader = DataLoader(dataset, batch_size = 512, shuffle = True, collate_fn = collate_fn) # 자동배치 ON 
+input_size = vocab_size # 각 시점 입력의 크기 = 원-핫 벡터의 길이
 learning_rate = 0.001 # 0.01로 했을 때 convergence_loss = 0.52, 0.001은 0.046, 0.0005
+recurrent_cell = 'lstm'
+is_bidirectional = False
+batch_size = 128 # Segler et al. 128
+num_layers = 3 # Segler et al. 3
+hidden_size = 1024 # Segler et al. 1024
+drop_out = 0.2 # Segler et al. 0.2
+# optimizer = 'optim.Adam()'
+# max_len = 64 # Segler et al.
 
-start_time = time.time()
-for epoch in tqdm(range(nb_epochs + 1), desc = 'epoch'):
-    for batch_idx, samples in tqdm(enumerate(dataloader), desc = 'batch'):
-        time.sleep(.01)
-        # print(batch_idx)
-        # print(samples)
-        # print(samples)
-        X, Y, lengths = samples[0].to(device), samples[1].to(device), samples[2].to(device)
-        # X = torch.nn.utils.rnn.pack_padded_sequence(X, lengths, batch_first = True, enforce_sorted = False)
-        outputs = net_lstm(X, lengths)
-        optimizer.zero_grad() # initialize gradients for recalculation
-        loss = criterion(outputs.view(-1, vocab_size), Y.view(-1)) # compute loss
-        loss.backward() # backprop gradient computation
-        optimizer.step() # 업데이트
-        if batch_idx % 5000 == 0:
-            print('Epoch {:4d}/{} Batch {}/{} Loss: {:.6f}'.format(
-                epoch, nb_epochs, batch_idx + 1, len(dataloader),
-                loss.item()
-                ))
-        loss_rnn.append(loss.item())
-print("--- %s seconds ---" % (time.time() - start_time))
-
-# LSTM
 class Net(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, layers):
+    def __init__(self, input_dim, hidden_dim, layers, drop_out, is_bidirectional, cell = 'rnn'):
         super(Net, self).__init__()
-        self.lstm = torch.nn.LSTM(input_dim, hidden_dim, num_layers=layers, batch_first=True)
-        self.fc = torch.nn.Linear(hidden_dim, hidden_dim, bias=True)
+        if cell == 'rnn':
+            self.recurrent = torch.nn.RNN(input_dim, hidden_dim, num_layers=layers, dropout = drop_out, bidirectional = is_bidirectional, batch_first=True)
+        if cell == 'lstm':
+            self.recurrent = torch.nn.LSTM(input_dim, hidden_dim, num_layers=layers, dropout = drop_out, bidirectional = is_bidirectional, batch_first=True)
+        if cell == 'gru':
+            self.recurrent = torch.nn.GRU(input_dim, hidden_dim, num_layers=layers, dropout = drop_out, bidirectional = is_bidirectional, batch_first=True)
+        self.fc = torch.nn.Linear(hidden_dim*2 if is_bidirectional else hidden_dim, input_dim)
 
-    def forward(self, x, lengths):
+    def forward(self, x, lengths, h, c):
         x = torch.nn.utils.rnn.pack_padded_sequence(x, lengths, batch_first = True, enforce_sorted = False)
-        x, _status = self.lstm(x)
+        if h is not None:
+            x, (hn, cn) = self.recurrent(x, (h, c))
+        else:
+            x, _status = self.recurrent(x)
         x = torch.nn.utils.rnn.pad_packed_sequence(x, batch_first = True, total_length = torch.max(lengths))
         x = self.fc(x[0])
-        return x
-net_lstm = Net(input_dim = len(char_to_index), hidden_dim = hidden_size, layers = 3).to(device)
+        if h is None:
+            return x
+        else:
+            return x, (hn, cn)
 
-criterion = torch.nn.CrossEntropyLoss()
-optimizer = optim.Adam(net_lstm.parameters(), learning_rate)
-nb_epochs = 10
-loss_lstm = []
-dataloader = DataLoader(dataset, batch_size = 1, shuffle = True, collate_fn = collate_fn) # 자동배치 ON
-batch = next(iter(dataloader)) 
-learning_rate = 0.0001 # 0.01로 했을 때 convergence_loss = 0.52, 0.001은 0.046, 0.0005
+net = Net(input_dim = input_size, hidden_dim = hidden_size, layers = num_layers, drop_out = drop_out, is_bidirectional = is_bidirectional, cell = recurrent_cell).to(device)
+
+criterion = torch.nn.CrossEntropyLoss().to(device)
+optimizer = optim.Adam(net.parameters(), learning_rate)
+
+loss_per_iter = []
+avg_loss_per_epoch = []
+dataloader = DataLoader(dataset, batch_size = batch_size, shuffle = True, collate_fn = collate_fn) # 자동배치 ON
+# batch = next(iter(dataloader)) 
+
+# 추가로 훈련시키고 싶으면 여기부터 추가 epoch 정해서 실행
+nb_epochs = 5
 
 start_time = time.time()
 # for epoch in tqdm(range(nb_epochs + 1), desc = 'epoch'):
     # for batch_idx, samples in tqdm(enumerate(dataloader), desc = 'batch'):
 for epoch in range(nb_epochs + 1):
+    loss_tmp = []
     for batch_idx, samples in enumerate(dataloader):
-        time.sleep(.01)
-        # print(batch_idx)
-        # print(samples)
-        # print(samples)
+        # time.sleep(.01)
         X, Y, lengths = samples[0].to(device), samples[1].to(device), samples[2].to(device)
-        # X = torch.nn.utils.rnn.pack_padded_sequence(X, lengths, batch_first = True, enforce_sorted = False)
-        outputs = net_lstm(X, lengths)
+        # print(X)
+        outputs = net(X, h = None, c = None, lengths = lengths)
+        # outputs = net(X, lengths)
         optimizer.zero_grad() # initialize gradients for recalculation
         loss = criterion(outputs.view(-1, vocab_size), Y.view(-1)) # compute loss
         loss.backward() # backprop gradient computation
@@ -148,16 +142,14 @@ for epoch in range(nb_epochs + 1):
                 epoch, nb_epochs, batch_idx + 1, len(dataloader),
                 loss.item()
                 ))
-        loss_lstm.append(loss.item())
+        loss_per_iter.append(loss.item())
+        loss_tmp.append(loss.item())
+    avg_loss_per_epoch.append(np.mean(loss_tmp))
 print("--- %s seconds ---" % (time.time() - start_time))
 
 # check-point
 # torch.save(net.state_dict(), 'parameters.pt')
-torch.save(net_rnn, 'rnn_model.pt')
-torch.save(loss_rnn, 'loss_rnn.pt')
-# torch.save(net_gru, 'gru_model.pt')
-torch.save(net_lstm, 'lstm_model.pt')
-torch.save(loss_lstm, 'loss_lstm.pt')
+torch.save([net, num_layers, is_bidirectional, hidden_size, loss_per_iter, avg_loss_per_epoch], 'rec_mod.pt')
 
 # checking parameters compatibility
 # m_state_dict = torch.load('parameters.pt')

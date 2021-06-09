@@ -1,4 +1,44 @@
-from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+from train_v4 import Net
+
+
+x = torch.zeros((vocab_size, 1))
+x = torch.randn((vocab_size, 1))
+x[char_to_index['<']] = 1
+x = x.reshape((-1, 1, vocab_size)).to(device)
+
+h_0 = torch.zeros(2, 1, 1024).to(device)
+c_0 = torch.zeros(2, 1, 1024).to(device)
+
+rnn = nn.LSTM(29, 1024, 1, batch_first = True).to(device)
+
+output, (hn, cn) = rnn(x, (h_0, c_0))
+
+fc = nn.Linear(1024, 29).to(device)
+
+output = fc(output)
+
+output, (hn, cn) = net(x, h = h_0, c = c_0, lengths = torch.as_tensor([1], dtype = torch.int64, device = 'cpu'))
+
+print(net)
+
+outputs = net(x = x, h = None, c = None, lengths = torch.as_tensor([1], dtype = torch.int64, device = 'cpu'))
+
+idx = outputs.cpu().data.numpy().argmax()
+
+x = torch.zeros((1, vocab_size)).to(device)
+x[0][idx] = 1
+x = x.unsqueeze(0)
+
+output, (hn, cn) = rnn(x, (hn, cn))
+
+
+
+
+
+
+
+
+
 
 out = pack_padded_sequence(lines_encoded[:5], lengths = [40, 38, 37, 34, 32], batch_first = True)
 

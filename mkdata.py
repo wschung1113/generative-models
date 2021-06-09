@@ -106,12 +106,7 @@ class CustomDataset(Dataset):
 dataset = CustomDataset()
 
 # check-point
-torch.save(char_to_index, 'char_to_index.pt')
-torch.save(index_to_char, 'index_to_char.pt')
-torch.save(max_len, 'max_len.pt')
-torch.save(lines, 'lines.pt')
-torch.save(lines_encoded, 'lines_encoded.pt')
-torch.save(find_max_len, 'find_max_len.pt')
+torch.save([char_to_index, index_to_char, max_len, lines, lines_encoded], 'data_specs.pt')
 
 # torch.save(dataset, 'tensor_dataset.pt')
 torch.save(dataset, 'dataset.pt')
