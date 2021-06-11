@@ -16,7 +16,7 @@ from torch.nn.utils.rnn import pad_sequence # 자동패딩해주는 함수
 
 dtype = torch.float
 # device = torch.device('cpu')
-device = torch.device('cuda:0')
+device = torch.device('cuda')
 
 df = pd.read_csv('train.csv')
 # df = df[:10000]

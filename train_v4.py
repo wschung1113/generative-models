@@ -21,7 +21,7 @@ from torch.nn.utils.rnn import pad_sequence # 자동패딩해주는 함수
 # from pytorchtools import EarlyStopping
 
 dtype = torch.float
-device = torch.device('cuda:0')
+device = torch.device('cuda')
 
 char_to_index = torch.load('data_specs.pt')[0]
 index_to_char = torch.load('data_specs.pt')[1]
@@ -75,8 +75,8 @@ def collate_fn(data):
 # hyperparameters
 vocab_size = len(char_to_index)
 input_size = vocab_size # 각 시점 입력의 크기 = 원-핫 벡터의 길이
-learning_rate = 0.001 # 0.01로 했을 때 convergence_loss = 0.52, 0.001은 0.046, 0.0005
-recurrent_cell = 'lstm'
+learning_rate = 0.0001 # 0.01로 했을 때 convergence_loss = 0.52, 0.001은 0.046, 0.0005
+recurrent_cell = 'gru'
 is_bidirectional = False
 batch_size = 128 # Segler et al. 128
 num_layers = 3 # Segler et al. 3
@@ -86,7 +86,7 @@ drop_out = 0.2 # Segler et al. 0.2
 # max_len = 64 # Segler et al.
 
 class Net(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, layers, drop_out, is_bidirectional, cell = 'rnn'):
+    def __init__(self, input_dim, hidden_dim, layers, drop_out, is_bidirectional, cell):
         super(Net, self).__init__()
         if cell == 'rnn':
             self.recurrent = torch.nn.RNN(input_dim, hidden_dim, num_layers=layers, dropout = drop_out, bidirectional = is_bidirectional, batch_first=True)
@@ -98,16 +98,26 @@ class Net(torch.nn.Module):
 
     def forward(self, x, lengths, h, c):
         x = torch.nn.utils.rnn.pack_padded_sequence(x, lengths, batch_first = True, enforce_sorted = False)
-        if h is not None:
-            x, (hn, cn) = self.recurrent(x, (h, c))
-        else:
+
+        if h is None:
             x, _status = self.recurrent(x)
+        else:
+            if c is None:
+                x, hn = self.recurrent(x, h)
+            else:
+                x, (hn, cn) = self.recurrent(x, (h, c))
+            
+        
         x = torch.nn.utils.rnn.pad_packed_sequence(x, batch_first = True, total_length = torch.max(lengths))
         x = self.fc(x[0])
         if h is None:
             return x
         else:
-            return x, (hn, cn)
+            if c is None:
+                return x, hn
+            else:
+                return x, (hn, cn)
+            
 
 net = Net(input_dim = input_size, hidden_dim = hidden_size, layers = num_layers, drop_out = drop_out, is_bidirectional = is_bidirectional, cell = recurrent_cell).to(device)
 
@@ -120,7 +130,7 @@ dataloader = DataLoader(dataset, batch_size = batch_size, shuffle = True, collat
 # batch = next(iter(dataloader)) 
 
 # 추가로 훈련시키고 싶으면 여기부터 추가 epoch 정해서 실행
-nb_epochs = 5
+nb_epochs = 100
 
 start_time = time.time()
 # for epoch in tqdm(range(nb_epochs + 1), desc = 'epoch'):
@@ -137,19 +147,26 @@ for epoch in range(nb_epochs + 1):
         loss = criterion(outputs.view(-1, vocab_size), Y.view(-1)) # compute loss
         loss.backward() # backprop gradient computation
         optimizer.step() # 업데이트
-        if batch_idx % 1000 == 0:
-            print('Epoch {:4d}/{} Batch {}/{} Loss: {:.6f}'.format(
-                epoch, nb_epochs, batch_idx + 1, len(dataloader),
-                loss.item()
-                ))
+
         loss_per_iter.append(loss.item())
         loss_tmp.append(loss.item())
+
+        if batch_idx % 1000 == 0:
+            print('Epoch {:4d}/{} Batch {}/{} Loss: {:.6f} Running Loss: {:.6f}'.format(
+                epoch, nb_epochs, batch_idx + 1, len(dataloader),
+                loss.item(), np.mean(loss_per_iter)
+                ))
+        
     avg_loss_per_epoch.append(np.mean(loss_tmp))
+
+    # 원하면 여기에 validation data로 loss 구해서 early stopping 구현 가능
 print("--- %s seconds ---" % (time.time() - start_time))
 
 # check-point
 # torch.save(net.state_dict(), 'parameters.pt')
-torch.save([net, num_layers, is_bidirectional, hidden_size, loss_per_iter, avg_loss_per_epoch], 'rec_mod.pt')
+# torch.save([net, num_layers, is_bidirectional, hidden_size, loss_per_iter, avg_loss_per_epoch], 'rec_mod.pt')
+# torch.save([net, num_layers, is_bidirectional, hidden_size, loss_per_iter, avg_loss_per_epoch], 'rec_mod_2.pt')
+torch.save([net, num_layers, is_bidirectional, hidden_size, loss_per_iter, avg_loss_per_epoch], 'gru.pt')
 
 # checking parameters compatibility
 # m_state_dict = torch.load('parameters.pt')

@@ -13,48 +13,43 @@ from torch.utils.data import TensorDataset # 텐서데이터셋
 from torch.utils.data import DataLoader # 데이터로더
 from torch.nn.utils.rnn import pack_padded_sequence, pad_sequence # 자동패딩해주는 함수
 
-device = torch.device('cuda:0')
+device = torch.device('cuda')
 
-mod_pt = 'rec_mod.pt'
+# mod_pt = 'bid_rec_mod.pt'
+mod = torch.load('rec_mod.pt')
+mod_2 = torch.load('rec_mod_2.pt')
 
-model = torch.load(mod_pt)[0]
-num_layers = torch.load(mod_pt)[1]
-is_bidirectional = torch.load(mod_pt)[2]
-hidden_size = torch.load(mod_pt)[3]
+model = mod_2[0]
+num_layers = mod_2[1]
+is_bidirectional = mod_2[2]
+hidden_size = mod_2[3]
 
 char_to_index = torch.load('data_specs.pt')[0]
 index_to_char = torch.load('data_specs.pt')[1]
 max_len = torch.load('data_specs.pt')[2]
+lines = max_len = torch.load('data_specs.pt')[3]
 
 vocab_size = len(char_to_index)
 
 # sample function
-def sample(model, char_to_ix):
-    # create start-token one-hot vector
-    x = torch.zeros((vocab_size, 1))
-    x[char_to_index['<']] = 1
-    x = x.reshape(1, vocab_size)
-    x = x.unsqueeze(0).to(device)
+def sample(model, char_to_ix, start_token, n):
+    out = []
+    for i in range(n):
+        # create start-token one-hot vector
+        x = torch.zeros((vocab_size, 1))
+        x[char_to_index[start_token]] = 1
+        x = x.reshape(1, vocab_size)
+        x = x.unsqueeze(0).to(device)
 
-    eos_idx = char_to_ix['>']
-    indices = []
-    counter = 1
+        eos_idx = char_to_ix['>']
+        indices = []
+        counter = 1
 
-    # create initial hidden and cell state
-    h0 = torch.zeros(num_layers*(2 if is_bidirectional else 1), 1, hidden_size).to(device)
-    c0 = torch.zeros(num_layers*(2 if is_bidirectional else 1), 1, hidden_size).to(device)
+        # create initial hidden and cell state
+        h0 = torch.zeros(num_layers*(2 if is_bidirectional else 1), 1, hidden_size).to(device)
+        c0 = torch.zeros(num_layers*(2 if is_bidirectional else 1), 1, hidden_size).to(device)
 
-    output, (hn, cn) = model(x = x, lengths = torch.as_tensor([1], dtype = torch.int64, device = 'cpu'), h = h0, c = c0)
-    idx = output.cpu().data.numpy().argmax()
-    indices.append(idx)
-
-    x = torch.zeros((vocab_size, 1))
-    x[idx] = 1
-    x = x.reshape(1, vocab_size)
-    x = x.unsqueeze(0).to(device)
-
-    while (idx != eos_idx and counter != max_len):
-        output, (hn, cn) = model(x, lengths = torch.as_tensor([1], dtype = torch.int64, device = 'cpu'), h = hn, c = cn)
+        output, (hn, cn) = model(x = x, lengths = torch.as_tensor([1], dtype = torch.int64, device = 'cpu'), h = h0, c = c0)
         idx = output.cpu().data.numpy().argmax()
         indices.append(idx)
 
@@ -63,14 +58,34 @@ def sample(model, char_to_ix):
         x = x.reshape(1, vocab_size)
         x = x.unsqueeze(0).to(device)
 
-        counter += 1
-    return indices
+        while (idx != eos_idx and counter != max_len):
+            output, (hn, cn) = model(x, lengths = torch.as_tensor([1], dtype = torch.int64, device = 'cpu'), h = hn, c = cn)
+            idx = output.cpu().data.numpy().argmax()
+            indices.append(idx)
 
-# sample sequence and print
-sampl = sample(model, char_to_index)
-# sampl = sample(model, char_to_index)
-result_str = ''.join([index_to_char[c] for c in sampl])
-print(result_str)
+            x = torch.zeros((vocab_size, 1))
+            x[idx] = 1
+            x = x.reshape(1, vocab_size)
+            x = x.unsqueeze(0).to(device)
+            
+            counter += 1
+        
+        indices = [char_to_index[start_token]] + indices
+        result_str = ''.join([index_to_char[c] for c in indices])
+
+        out.append(result_str)
+    
+
+    return out
+
+sampl = sample(model, char_to_index, '<', 1)
+for s in sampl:
+    print(s)
+
+
+for i in range(100):
+    print(lines[random.randint(0, len(lines))])
+    
 
 
 
