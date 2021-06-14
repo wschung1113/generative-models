@@ -13,16 +13,15 @@ from torch.utils.data import TensorDataset # 텐서데이터셋
 from torch.utils.data import DataLoader # 데이터로더
 from torch.nn.utils.rnn import pack_padded_sequence, pad_sequence # 자동패딩해주는 함수
 
-device = torch.device('cuda')
+device = torch.device('cuda:0')
 
-# mod_pt = 'bid_rec_mod.pt'
-mod = torch.load('rec_mod.pt')
-mod_2 = torch.load('rec_mod_2.pt')
+# 'bid_rec_mod.pt'    'rec_mod.pt'    'rec_mod_2.pt'    'gru.pt'
+mod = torch.load('rec_mod_2.pt')
 
-model = mod_2[0]
-num_layers = mod_2[1]
-is_bidirectional = mod_2[2]
-hidden_size = mod_2[3]
+model = mod[0]
+num_layers = mod[1]
+is_bidirectional = mod[2]
+hidden_size = mod[3]
 
 char_to_index = torch.load('data_specs.pt')[0]
 index_to_char = torch.load('data_specs.pt')[1]
@@ -31,6 +30,8 @@ lines = max_len = torch.load('data_specs.pt')[3]
 
 vocab_size = len(char_to_index)
 
+
+
 # sample function
 def sample(model, char_to_ix, start_token, n):
     out = []
@@ -38,8 +39,7 @@ def sample(model, char_to_ix, start_token, n):
         # create start-token one-hot vector
         x = torch.zeros((vocab_size, 1))
         x[char_to_index[start_token]] = 1
-        x = x.reshape(1, vocab_size)
-        x = x.unsqueeze(0).to(device)
+        x = x.reshape(1, 1, vocab_size).to(device)
 
         eos_idx = char_to_ix['>']
         indices = []
@@ -50,23 +50,34 @@ def sample(model, char_to_ix, start_token, n):
         c0 = torch.zeros(num_layers*(2 if is_bidirectional else 1), 1, hidden_size).to(device)
 
         output, (hn, cn) = model(x = x, lengths = torch.as_tensor([1], dtype = torch.int64, device = 'cpu'), h = h0, c = c0)
+        # output, hn = model(x = x, lengths = torch.as_tensor([1], dtype = torch.int64, device = 'cpu'), h = h0, c = None)
+        # output = output.view(-1).float()
+        # print(output)
+    #     # print(output.shape)
+    #     # print(output.squeeze().shape)
         idx = output.cpu().data.numpy().argmax()
+        # idx = torch.multinomial(output, 1)
+    #     # print(idx)
         indices.append(idx)
 
         x = torch.zeros((vocab_size, 1))
         x[idx] = 1
-        x = x.reshape(1, vocab_size)
-        x = x.unsqueeze(0).to(device)
+        x = x.reshape(1, 1, vocab_size).to(device)
 
         while (idx != eos_idx and counter != max_len):
             output, (hn, cn) = model(x, lengths = torch.as_tensor([1], dtype = torch.int64, device = 'cpu'), h = hn, c = cn)
+            # output, hn = model(x = x, lengths = torch.as_tensor([1], dtype = torch.int64, device = 'cpu'), h = hn, c = None)
+            # output = output.view(-1).float()
+            # print(output)
+            # print(output.shape)
+            # print(output.squeeze().shape)
             idx = output.cpu().data.numpy().argmax()
+            # idx = torch.multinomial(output, 1)
             indices.append(idx)
 
             x = torch.zeros((vocab_size, 1))
             x[idx] = 1
-            x = x.reshape(1, vocab_size)
-            x = x.unsqueeze(0).to(device)
+            x = x.reshape(1, 1, vocab_size).to(device)
             
             counter += 1
         

@@ -21,7 +21,7 @@ from torch.nn.utils.rnn import pad_sequence # 자동패딩해주는 함수
 # from pytorchtools import EarlyStopping
 
 dtype = torch.float
-device = torch.device('cuda')
+device = torch.device('cuda:0')
 
 char_to_index = torch.load('data_specs.pt')[0]
 index_to_char = torch.load('data_specs.pt')[1]

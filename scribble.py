@@ -33,10 +33,15 @@ output, (hn, cn) = rnn(x, (hn, cn))
 
 
 
+tmp = torch.tensor([[[1, 3, 13, 14, 15]]]).squeeze(0).float()
+tmp = torch.tensor([[[1, 3, 13, 14, 15]]])
+tmp = tmp.view(-1)
+tmp.reshape(1, 1, 5)
+tmp.shape
 
+torch.multinomial(tmp, 1)
 
-
-
+mod[5][-1]
 
 
 
