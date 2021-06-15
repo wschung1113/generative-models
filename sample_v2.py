@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import random
 import pickle
+import time
 
 import torch
 import torch.nn as nn
@@ -13,15 +14,19 @@ from torch.utils.data import TensorDataset # 텐서데이터셋
 from torch.utils.data import DataLoader # 데이터로더
 from torch.nn.utils.rnn import pack_padded_sequence, pad_sequence # 자동패딩해주는 함수
 
+from model import Net
+
 device = torch.device('cuda:0')
 
-# 'bid_rec_mod.pt'    'rec_mod.pt'    'rec_mod_2.pt'    'gru.pt'
-mod = torch.load('rec_mod_2.pt')
+# 'rnn' 'lstm' 'gru'
+mod = torch.load('rnn.pt')
+recurrent_cell = 'rnn'
 
-model = mod[0]
-num_layers = mod[1]
-is_bidirectional = mod[2]
-hidden_size = mod[3]
+model = mod['model']
+num_layers = mod['num_hidden_layers']
+is_bidirectional = mod['is_bidirectional']
+hidden_size = mod['hidden_layer_dim']
+avg_loss_per_epoch = mod['avg_loss_per_epoch']
 
 char_to_index = torch.load('data_specs.pt')[0]
 index_to_char = torch.load('data_specs.pt')[1]
@@ -30,10 +35,8 @@ lines = max_len = torch.load('data_specs.pt')[3]
 
 vocab_size = len(char_to_index)
 
-
-
 # sample function
-def sample(model, char_to_ix, start_token, n):
+def sample(model, cell, char_to_ix, start_token, n):
     out = []
     for i in range(n):
         # create start-token one-hot vector
@@ -45,51 +48,60 @@ def sample(model, char_to_ix, start_token, n):
         indices = []
         counter = 1
 
-        # create initial hidden and cell state
-        h0 = torch.zeros(num_layers*(2 if is_bidirectional else 1), 1, hidden_size).to(device)
-        c0 = torch.zeros(num_layers*(2 if is_bidirectional else 1), 1, hidden_size).to(device)
-
-        output, (hn, cn) = model(x = x, lengths = torch.as_tensor([1], dtype = torch.int64, device = 'cpu'), h = h0, c = c0)
-        # output, hn = model(x = x, lengths = torch.as_tensor([1], dtype = torch.int64, device = 'cpu'), h = h0, c = None)
-        # output = output.view(-1).float()
-        # print(output)
-    #     # print(output.shape)
-    #     # print(output.squeeze().shape)
-        idx = output.cpu().data.numpy().argmax()
-        # idx = torch.multinomial(output, 1)
-    #     # print(idx)
-        indices.append(idx)
-
-        x = torch.zeros((vocab_size, 1))
-        x[idx] = 1
-        x = x.reshape(1, 1, vocab_size).to(device)
-
-        while (idx != eos_idx and counter != max_len):
-            output, (hn, cn) = model(x, lengths = torch.as_tensor([1], dtype = torch.int64, device = 'cpu'), h = hn, c = cn)
-            # output, hn = model(x = x, lengths = torch.as_tensor([1], dtype = torch.int64, device = 'cpu'), h = hn, c = None)
-            # output = output.view(-1).float()
-            # print(output)
-            # print(output.shape)
-            # print(output.squeeze().shape)
-            idx = output.cpu().data.numpy().argmax()
-            # idx = torch.multinomial(output, 1)
+        if cell == 'lstm':
+            h0 = torch.zeros(num_layers*(2 if is_bidirectional else 1), 1, hidden_size).to(device) # create initial hidden and cell state
+            c0 = torch.zeros(num_layers*(2 if is_bidirectional else 1), 1, hidden_size).to(device)
+            output, (hn, cn) = model(x = x, lengths = torch.as_tensor([1], dtype = torch.int64, device = 'cpu'), h = h0, c = c0, cell = cell)
+            output = F.softmax(output.view(-1), dim = 0)
+            idx = torch.multinomial(output, 1).item()
             indices.append(idx)
 
             x = torch.zeros((vocab_size, 1))
-            x[idx] = 1
+            x[idx] = 1 # output as next input
             x = x.reshape(1, 1, vocab_size).to(device)
-            
-            counter += 1
+
+            while (idx != eos_idx and counter != max_len):
+                output, (hn, cn) = model(x, lengths = torch.as_tensor([1], dtype = torch.int64, device = 'cpu'), h = hn, c = cn, cell = cell)
+                output = F.softmax(output.view(-1), dim = 0)
+                idx = torch.multinomial(output, 1).item()
+                indices.append(idx)
+
+                x = torch.zeros((vocab_size, 1))
+                x[idx] = 1
+                x = x.reshape(1, 1, vocab_size).to(device)
+                
+                counter += 1
+
+        else: # cell == 'rnn' or 'gru'
+            h0 = torch.zeros(num_layers*(2 if is_bidirectional else 1), 1, hidden_size).to(device) # create initial hidden and cell state
+            output, hn = model(x = x, lengths = torch.as_tensor([1], dtype = torch.int64, device = 'cpu'), h = h0, c = None, cell = cell)
+            output = F.softmax(output.view(-1), dim = 0)
+            idx = torch.multinomial(output, 1).item()
+            indices.append(idx)
+
+            x = torch.zeros((vocab_size, 1))
+            x[idx] = 1 # output as next input
+            x = x.reshape(1, 1, vocab_size).to(device)
+
+            while (idx != eos_idx and counter != max_len):
+                output, hn = model(x, lengths = torch.as_tensor([1], dtype = torch.int64, device = 'cpu'), h = hn, c = None, cell = cell)
+                output = F.softmax(output.view(-1), dim = 0)
+                idx = torch.multinomial(output, 1).item()
+                indices.append(idx)
+
+                x = torch.zeros((vocab_size, 1))
+                x[idx] = 1
+                x = x.reshape(1, 1, vocab_size).to(device)
+                
+                counter += 1
         
         indices = [char_to_index[start_token]] + indices
         result_str = ''.join([index_to_char[c] for c in indices])
-
         out.append(result_str)
     
-
     return out
 
-sampl = sample(model, char_to_index, '<', 1)
+sampl = sample(model = model, cell = recurrent_cell, char_to_ix = char_to_index, start_token = '<', n = 1)
 for s in sampl:
     print(s)
 

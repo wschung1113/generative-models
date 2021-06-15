@@ -20,6 +20,8 @@ from torch.nn.utils.rnn import pad_sequence # 자동패딩해주는 함수
 
 # from pytorchtools import EarlyStopping
 
+from model import Net
+
 dtype = torch.float
 device = torch.device('cuda:0')
 
@@ -28,6 +30,8 @@ index_to_char = torch.load('data_specs.pt')[1]
 max_len = torch.load('data_specs.pt')[2]
 lines = torch.load('data_specs.pt')[3]
 lines_encoded = torch.load('data_specs.pt')[4]
+
+dataset = torch.load('dataset.pt')
 
 class CustomDataset(Dataset): 
     def __init__(self):
@@ -49,7 +53,7 @@ class CustomDataset(Dataset):
         # l = self.data[idx]
         return l, len(l) - 1
 
-dataset = torch.load('dataset.pt')
+dataset = CustomDataset()
 
 # dataloader
 def collate_fn(data):
@@ -68,107 +72,69 @@ def collate_fn(data):
     tensor_Y = torch.stack(padded_Y)
     return tensor_X, tensor_Y, lengths.long(), max_len.long()
 
-# dataloader = DataLoader(dataset, batch_size = 512, shuffle = True, collate_fn = collate_fn) # 자동배치 ON 
-# dataloader = DataLoader(dataset, batch_size = None) # 자동배치 OFF # batch_size 와 batch_sample가 모두 None일 때 자동배치가 해제됩니다
-# batch = next(iter(dataloader))
-
 # hyperparameters
 vocab_size = len(char_to_index)
 input_size = vocab_size # 각 시점 입력의 크기 = 원-핫 벡터의 길이
-learning_rate = 0.0001 # 0.01로 했을 때 convergence_loss = 0.52, 0.001은 0.046, 0.0005
-recurrent_cell = 'gru'
+learning_rate = 0.001 # 0.01로 했을 때 convergence_loss = 0.52, 0.001은 0.046, 0.0005
+# recurrent_cell = 'rnn'
 is_bidirectional = False
 batch_size = 128 # Segler et al. 128
 num_layers = 3 # Segler et al. 3
 hidden_size = 1024 # Segler et al. 1024
 drop_out = 0.2 # Segler et al. 0.2
 # optimizer = 'optim.Adam()'
-# max_len = 64 # Segler et al.
+# max_len = 64 # Segler et al.           
 
-class Net(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, layers, drop_out, is_bidirectional, cell):
-        super(Net, self).__init__()
-        if cell == 'rnn':
-            self.recurrent = torch.nn.RNN(input_dim, hidden_dim, num_layers=layers, dropout = drop_out, bidirectional = is_bidirectional, batch_first=True)
-        if cell == 'lstm':
-            self.recurrent = torch.nn.LSTM(input_dim, hidden_dim, num_layers=layers, dropout = drop_out, bidirectional = is_bidirectional, batch_first=True)
-        if cell == 'gru':
-            self.recurrent = torch.nn.GRU(input_dim, hidden_dim, num_layers=layers, dropout = drop_out, bidirectional = is_bidirectional, batch_first=True)
-        self.fc = torch.nn.Linear(hidden_dim*2 if is_bidirectional else hidden_dim, input_dim)
+train_times = []
 
-    def forward(self, x, lengths, h, c):
-        x = torch.nn.utils.rnn.pack_padded_sequence(x, lengths, batch_first = True, enforce_sorted = False)
+nb_epochs = 5
 
-        if h is None:
-            x, _status = self.recurrent(x)
-        else:
-            if c is None:
-                x, hn = self.recurrent(x, h)
-            else:
-                x, (hn, cn) = self.recurrent(x, (h, c))
+# for c in ['rnn', 'lstm', 'gru']:
+for c in ['rnn']:
+    recurrent_cell = c
+    net = Net(input_dim = input_size, hidden_dim = hidden_size, layers = num_layers, drop_out = drop_out, is_bidirectional = is_bidirectional, cell = recurrent_cell)
+    net = torch.nn.DataParallel(net, device_ids = [0, 1])
+    # net = torch.nn.DataParallel(net)
+    net = net.to(device)
+
+    criterion = torch.nn.CrossEntropyLoss().to(device)
+    optimizer = optim.Adam(net.parameters(), learning_rate)
+
+    loss_per_iter = []
+    avg_loss_per_epoch = []
+    dataloader = DataLoader(dataset, batch_size = batch_size, shuffle = True, collate_fn = collate_fn) # 자동배치 ON
+
+    start_time = time.time()
+    train_times.append(start_time)
+    net.train()
+    # for epoch in tqdm(range(nb_epochs + 1), desc = 'epoch'):
+        # for batch_idx, samples in tqdm(enumerate(dataloader), desc = 'batch'):
+    for epoch in range(nb_epochs + 1):
+        loss_tmp = []
+        for batch_idx, samples in enumerate(dataloader):
+            # time.sleep(.01)
+            X, Y, lengths = samples[0].to(device), samples[1].to(device), samples[2].to(device)
+            outputs, _ = net(X, h = None, c = None, lengths = lengths, cell = recurrent_cell)
+            optimizer.zero_grad() # initialize gradients for recalculation
+            loss = criterion(outputs.view(-1, vocab_size), Y.view(-1)) # compute loss
+            loss.backward() # backprop gradient computation
+            optimizer.step() # 업데이트
+
+            loss_per_iter.append(loss.item())
+            loss_tmp.append(loss.item())
+
+            if batch_idx % 1000 == 0:
+                print('Epoch {:4d}/{} Batch {}/{} Loss: {:.6f} Running Loss: {:.6f}'.format(
+                    epoch, nb_epochs, batch_idx + 1, len(dataloader),
+                    loss.item(), np.mean(loss_per_iter)
+                    ))
             
-        
-        x = torch.nn.utils.rnn.pad_packed_sequence(x, batch_first = True, total_length = torch.max(lengths))
-        x = self.fc(x[0])
-        if h is None:
-            return x
-        else:
-            if c is None:
-                return x, hn
-            else:
-                return x, (hn, cn)
-            
+        avg_loss_per_epoch.append(np.mean(loss_tmp))
 
-net = Net(input_dim = input_size, hidden_dim = hidden_size, layers = num_layers, drop_out = drop_out, is_bidirectional = is_bidirectional, cell = recurrent_cell).to(device)
+        # 원하면 여기에 validation data로 loss 구해서 early stopping 구현 가능
+    net.eval()
+    train_times.append(time.time() - start_time)
+    # print("--- %s seconds ---" % (time.time() - start_time))
 
-criterion = torch.nn.CrossEntropyLoss().to(device)
-optimizer = optim.Adam(net.parameters(), learning_rate)
-
-loss_per_iter = []
-avg_loss_per_epoch = []
-dataloader = DataLoader(dataset, batch_size = batch_size, shuffle = True, collate_fn = collate_fn) # 자동배치 ON
-# batch = next(iter(dataloader)) 
-
-# 추가로 훈련시키고 싶으면 여기부터 추가 epoch 정해서 실행
-nb_epochs = 100
-
-start_time = time.time()
-# for epoch in tqdm(range(nb_epochs + 1), desc = 'epoch'):
-    # for batch_idx, samples in tqdm(enumerate(dataloader), desc = 'batch'):
-for epoch in range(nb_epochs + 1):
-    loss_tmp = []
-    for batch_idx, samples in enumerate(dataloader):
-        # time.sleep(.01)
-        X, Y, lengths = samples[0].to(device), samples[1].to(device), samples[2].to(device)
-        # print(X)
-        outputs = net(X, h = None, c = None, lengths = lengths)
-        # outputs = net(X, lengths)
-        optimizer.zero_grad() # initialize gradients for recalculation
-        loss = criterion(outputs.view(-1, vocab_size), Y.view(-1)) # compute loss
-        loss.backward() # backprop gradient computation
-        optimizer.step() # 업데이트
-
-        loss_per_iter.append(loss.item())
-        loss_tmp.append(loss.item())
-
-        if batch_idx % 1000 == 0:
-            print('Epoch {:4d}/{} Batch {}/{} Loss: {:.6f} Running Loss: {:.6f}'.format(
-                epoch, nb_epochs, batch_idx + 1, len(dataloader),
-                loss.item(), np.mean(loss_per_iter)
-                ))
-        
-    avg_loss_per_epoch.append(np.mean(loss_tmp))
-
-    # 원하면 여기에 validation data로 loss 구해서 early stopping 구현 가능
-print("--- %s seconds ---" % (time.time() - start_time))
-
-# check-point
-# torch.save(net.state_dict(), 'parameters.pt')
-# torch.save([net, num_layers, is_bidirectional, hidden_size, loss_per_iter, avg_loss_per_epoch], 'rec_mod.pt')
-# torch.save([net, num_layers, is_bidirectional, hidden_size, loss_per_iter, avg_loss_per_epoch], 'rec_mod_2.pt')
-torch.save([net, num_layers, is_bidirectional, hidden_size, loss_per_iter, avg_loss_per_epoch], 'gru.pt')
-
-# checking parameters compatibility
-# m_state_dict = torch.load('parameters.pt')
-# new_m = Net(input_dim = vocab_size, hidden_dim = hidden_size, layers = 1)
-# new_m.load_state_dict(m_state_dict)
+    # check-point
+    torch.save({'model':net, 'num_hidden_layers':num_layers, 'is_bidirectional':is_bidirectional, 'hidden_layer_dim':hidden_size, 'update_loss':loss_per_iter, 'avg_loss_per_epoch':avg_loss_per_epoch}, recurrent_cell + '.pt')
