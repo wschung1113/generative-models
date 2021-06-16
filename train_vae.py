@@ -5,6 +5,7 @@ import numpy as np
 import random
 import pickle
 import time
+import argparse
 
 from tqdm import tqdm
 
@@ -19,7 +20,6 @@ from torch.utils.data.sampler import SubsetRandomSampler
 from torch.utils.data import Dataset
 
 from __future__ import print_function
-import argparse
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
 
@@ -37,6 +37,8 @@ lines_encoded = specs[4]
 vocab_size = len(char_to_index)
 
 parser = argparse.ArgumentParser(description='VAE SMILES Example')
+parser.add_argument('--parallel-training', type=bool, default=False, metavar='N',
+                    help='Boolean of whether to train with multiple GPUs or not')
 parser.add_argument('--batch-size', type=int, default=128, metavar='N',
                     help='input batch size for training (default: 128)')
 parser.add_argument('--epochs', type=int, default=10, metavar='N',
@@ -56,9 +58,9 @@ parser.add_argument('--validation-split', type=float, default=0.2, metavar='N',
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
 
-torch.manual_seed(args.seed)
+# torch.manual_seed(args.seed)
 
-device = torch.device("cuda:1" if args.cuda else "cpu")
+device = torch.device("cuda:0" if args.cuda else "cpu")
 
 class CustomDataset(Dataset): 
     def __init__(self):
@@ -80,7 +82,7 @@ dataset = torch.load('dataset.pt')
 dataset_size = len(dataset)
 indices = list(range(dataset_size))
 split = int(np.floor(args.validation_split*dataset_size))
-np.random.seed(args.seed)
+# np.random.seed(args.seed)
 np.random.shuffle(indices)
 train_indices, val_indices = indices[split:], indices[:split]
 
@@ -103,7 +105,7 @@ def collate_fn(data):
     padded_X_onehot = [torch.eye(input_size)[x] for x in padded_X]
     tensor_X = torch.stack(padded_X_onehot)
     tensor_Y = torch.stack(padded_Y)
-    return tensor_X, tensor_Y, lengths.long(), max_len.long()
+    return tensor_X, tensor_Y, lengths.long()
 
 train_loader = torch.utils.data.DataLoader(
     dataset,
@@ -113,17 +115,9 @@ test_loader = torch.utils.data.DataLoader(
     dataset,
     batch_size=args.batch_size, **kwargs, collate_fn=collate_fn, sampler=valid_sampler)
 
-batch = next(iter(train_loader))
-
-
-
-
-//TODO
-fix from here
-
-
-
-
+sample_loader = torch.utils.data.DataLoader(
+    dataset,
+    batch_size=1, **kwargs, collate_fn=collate_fn, shuffle=True)
 
 class VAE(nn.Module):
     def __init__(self, input_dim):
@@ -152,8 +146,9 @@ class VAE(nn.Module):
         z = self.reparameterize(mu, logvar)
         return self.decode(z), mu, logvar
 
-
 model = VAE(input_dim=args.input_dim).to(device)
+if args.parallel_training:
+    model = nn.DataParallel(model, device_ids=[0, 1])
 optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
 
 # Reconstruction + KL divergence losses summed over all elements and batch
@@ -168,11 +163,10 @@ def loss_function(recon_x, x, mu, logvar, input_dim):
 
     return BCE + KLD
 
-
 def train(epoch):
     model.train()
     train_loss = 0
-    for batch_idx, (data, _) in enumerate(dataloader):
+    for batch_idx, (data, _, _) in enumerate(train_loader):
         data = data.to(device)
         optimizer.zero_grad()
         recon_batch, mu, logvar = model(data, args.input_dim)
@@ -193,17 +187,19 @@ def test(epoch):
     model.eval()
     test_loss = 0
     with torch.no_grad():
-        for i, (data, _) in enumerate(test_loader):
+        for i, (data, _, _) in enumerate(test_loader):
             data = data.to(device)
-            recon_batch, mu, logvar = model(data)
-            test_loss += loss_function(recon_batch, data, mu, logvar).item()
-            if i == 0:
-                n = min(data.size(0), 8)
-                comparison = torch.cat([data[:n],
-                                      recon_batch.view(args.batch_size, 1, 28, 28)[:n]])
-                save_image(comparison.cpu(),
-                         '../charrnn/data/results/sample_' + str(epoch) + '.png', nrow=n)
+            recon_batch, mu, logvar = model(data, args.input_dim)
+            test_loss += loss_function(recon_batch, data, mu, logvar, args.input_dim).item()
 
+            # # 뭐하는 부분인지 모르겠음
+            # if i == 0: # 첫번째 dataloader iteration이면
+            #     n = min(data.size(0), 8) # batch_size와 8중에 작은 숫자가 n
+            #     comparison = torch.cat([data[:n],
+            #                           recon_batch.view(args.batch_size, 1, 28, 28)[:n]])
+            #     save_image(comparison.cpu(),
+            #              '../charrnn/data/results/sample_' + str(epoch) + '.png', nrow=n)
+    
     test_loss /= len(test_loader.dataset)
     print('====> Test set loss: {:.4f}'.format(test_loss))
 
@@ -211,8 +207,25 @@ if __name__ == "__main__":
     for epoch in range(1, args.epochs + 1):
         train(epoch)
         test(epoch)
-        with torch.no_grad():
-            sample = torch.randn(64, 20).to(device)
-            sample = model.decode(sample).cpu()
-            save_image(sample.view(64, 1, 28, 28),
-                       '../charrnn/data/results/sample_' + str(epoch) + '.png')
+        # Early Stopping 적용
+
+# SMILES generation with VAE
+sample_loader = torch.utils.data.DataLoader(
+    dataset,
+    batch_size=1, **kwargs, collate_fn=collate_fn, shuffle=True)
+    
+with torch.no_grad():
+    for i in range(5):
+        # sample = torch.randn(64, 20).to(device)
+        s, _, _ = next(iter(sample_loader))
+        s = s.to(device)
+        sample, _, _ = model(s, args.input_dim)
+        sample = sample.cpu()
+        # sample = model.decode(sample).cpu()
+        indices = torch.argmax(sample, 1).cpu().tolist()
+        result_str = ''.join([index_to_char[c] for c in indices]) + '>'
+
+        # retrieve original SMILES
+        s_indices = torch.argmax(s[0], 1).cpu().tolist()
+        orig_str = ''.join([index_to_char[c] for c in s_indices]) + '>'
+        print('Original: ' + orig_str + '\nGenerated: ' + result_str + '\n')
